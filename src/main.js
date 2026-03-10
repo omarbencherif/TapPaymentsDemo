@@ -2,6 +2,7 @@
 // This handles the payment flow: CIT (with 3DS) -> Save Card -> MIT (without 3DS)
 
 import { TAP_CONFIG } from './config.js';
+import '../public/style.css';
 
 // State management
 const state = {
