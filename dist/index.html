@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/TapPaymentsDemo/webstorm-icon-logo.svg" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tap Payments Integration</title>
+  <script src="https://tap-sdks.b-cdn.net/card/1.0.2/index.js"></script>
+  <script type="module" crossorigin src="/TapPaymentsDemo/assets/index-VrAH-BsK.js"></script>
+  <link rel="stylesheet" crossorigin href="/TapPaymentsDemo/assets/index-CRtI2qhO.css">
+</head>
+<body>
+<header class="header">
+  <h1>Tap Payments Integration</h1>
+  <p class="subtitle">Card Payment Flow with CIT & MIT</p>
+</header>
+
+<main id="app">
+  <!-- Collapsible Configuration Section -->
+  <section class="payment-section config-section">
+    <div class="config-header" id="config-toggle">
+      <h2>🔑 Tap SDK Configuration</h2>
+      <span class="toggle-icon">▼</span>
+    </div>
+
+    <div class="config-content collapsed" id="config-content">
+      <p class="section-description">Update your Tap API credentials if needed</p>
+
+      <div class="payment-form">
+        <div class="form-group">
+          <label for="public-key">Public Key *</label>
+          <input type="text" id="public-key" placeholder="pk_test_..." value="">
+        </div>
+
+        <div class="form-group">
+          <label for="merchant-id">Merchant ID *</label>
+          <input type="text" id="merchant-id" placeholder="Your Tap Merchant ID" value="">
+        </div>
+
+        <div class="form-group">
+          <label for="customer-id">Customer ID (optional)</label>
+          <input type="text" id="customer-id" placeholder="cus_xxx (leave empty for guest)">
+        </div>
+
+        <button id="update-config-btn" class="btn btn-secondary">Update Configuration</button>
+        <button id="clear-data-btn" class="btn btn-danger" style="margin-left: 10px;">Clear All Data</button>
+
+        <div id="config-status" class="status-message"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Step 1: Customer Initiated Transaction (CIT) with 3DS -->
+  <section class="payment-section" id="cit-section">
+    <h2>Step 1: Customer Initiated Transaction (CIT) 🔒</h2>
+    <p class="section-description">Enter your card details to make a payment and save the card for future use (with 3DS authentication)</p>
+
+    <div class="card-container">
+      <div id="card-sdk-container"></div>
+    </div>
+
+    <div class="payment-form">
+      <div class="form-group">
+        <label for="cit-amount">Amount *</label>
+        <input type="number" id="cit-amount" placeholder="10.00" step="0.01" min="0.01" value="10.00">
+      </div>
+
+      <div class="form-group">
+        <label for="cit-currency">Currency *</label>
+        <select id="cit-currency">
+          <option value="KWD">KWD</option>
+          <option value="USD">USD</option>
+          <option value="SAR">SAR</option>
+          <option value="AED">AED</option>
+        </select>
+      </div>
+
+      <button id="pay-and-save-btn" class="btn btn-primary" disabled>Pay & Save Card</button>
+
+      <div id="cit-status" class="status-message"></div>
+    </div>
+  </section>
+
+  <!-- Step 2: Display Saved Cards -->
+  <section class="payment-section" id="saved-cards-section">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+      <h2>Step 2: Saved Cards 💳</h2>
+      <button id="reset-cards-btn" class="btn btn-secondary" style="padding: 0.5rem 1rem; font-size: 0.875rem;">Reset Cards</button>
+    </div>
+    <p class="section-description">Your saved cards will appear here</p>
+
+    <div id="saved-cards-list" class="saved-cards-list">
+      <p class="empty-state">No saved cards yet. Complete a CIT transaction above to save a card.</p>
+    </div>
+  </section>
+
+  <!-- Step 3: Merchant Initiated Transaction (MIT) -->
+  <section class="payment-section" id="mit-section">
+    <h2>Step 3: Merchant Initiated Transaction (MIT) ⚡</h2>
+    <p class="section-description">Pay using a saved card (no 3DS required)</p>
+
+    <div class="payment-form">
+      <div class="form-group">
+        <label for="selected-card">Select Saved Card *</label>
+        <select id="selected-card" disabled>
+          <option value="">No saved cards available</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="mit-amount">Amount *</label>
+        <input type="number" id="mit-amount" placeholder="5.00" step="0.01" min="0.01" value="5.00">
+      </div>
+
+      <div class="form-group">
+        <label for="mit-currency">Currency *</label>
+        <select id="mit-currency">
+          <option value="KWD">KWD</option>
+          <option value="USD">USD</option>
+          <option value="SAR">SAR</option>
+          <option value="AED">AED</option>
+        </select>
+      </div>
+
+      <button id="pay-with-saved-card-btn" class="btn btn-primary" disabled>Pay with Saved Card</button>
+
+      <div id="mit-status" class="status-message"></div>
+    </div>
+  </section>
+
+  <!-- Transaction History -->
+  <section class="payment-section" id="history-section">
+    <div class="section-header">
+      <h2>📊 Transaction History</h2>
+      <button id="reset-transactions-btn" class="btn btn-secondary btn-small">Reset Transactions</button>
+    </div>
+    <div id="transaction-history" class="transaction-history">
+      <p class="empty-state">No transactions yet</p>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <p>Tap Payments SDK Integration Demo</p>
+</footer>
+
+</body>
+</html>
