@@ -1,14 +1,23 @@
 {
-  "name": "${PROJECT_NAME}",
+  "name": "TapPayments",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "vite --config vite.config.cjs",
+    "build": "vite build --config vite.config.cjs",
+    "preview": "vite preview --config vite.config.cjs",
+    "server": "node backend-example.js",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2"
   },
   "devDependencies": {
+    "gh-pages": "^6.3.0",
     "prettier": "^3.3.1",
     "vite": "^5.1.6"
   }
