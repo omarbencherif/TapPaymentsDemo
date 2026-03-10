@@ -7,7 +7,7 @@ export const TAP_CONFIG = {
   merchantId: '599424',
 
   // Backend URL for Tap API calls
-  backendBaseUrl: 'http://localhost:4000',
+  backendBaseUrl: 'http://localhost:3000',
 
   // Optional: Set a customer ID if you have one
   customerId: '', // e.g., 'cus_TS01A2220231433Ql4N1810314'

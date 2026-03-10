@@ -99,7 +99,7 @@ async function checkFor3DSReturn() {
 
   try {
     // Get charge status from backend
-    const response = await fetch(`http://localhost:4000/api/charges/${chargeId}`);
+    const response = await fetch(`${TAP_CONFIG.backendBaseUrl}/api/charges/${chargeId}`);
     const result = await response.json();
 
     if (!result.success) {
@@ -107,6 +107,9 @@ async function checkFor3DSReturn() {
     }
 
     const chargeStatus = result.data?.status;
+    const paymentAgreement = result.data?.payment_agreement;
+    const cardInfo = result.data?.card;
+    const customerInfo = result.data?.customer;
     const pendingData = JSON.parse(localStorage.getItem('tap_pending_cit') || '{}');
 
     // Update transaction
@@ -117,6 +120,9 @@ async function checkFor3DSReturn() {
 
     // If charge was successful and card was pending, save it
     if (['CAPTURED', 'AUTHORIZED'].includes(chargeStatus) && pendingData.cardData) {
+      if (cardInfo?.id) pendingData.cardData.savedToken = cardInfo.id;
+      if (customerInfo?.id) pendingData.cardData.customerId = customerInfo.id;
+      if (paymentAgreement?.id) pendingData.cardData.paymentAgreementId = paymentAgreement.id;
       state.savedCards.push(pendingData.cardData);
       showStatus(statusEl, '✅ 3DS completed! Card saved.', 'success');
     } else if (chargeStatus === 'FAILED') {
@@ -416,7 +422,7 @@ async function handleTokenizationSuccess(tokenData) {
     };
 
     // Call backend to create charge with Tap API
-    const response = await fetch('http://localhost:4000/api/charges/cit', {
+    const response = await fetch(`${TAP_CONFIG.backendBaseUrl}/api/charges/cit`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -427,7 +433,7 @@ async function handleTokenizationSuccess(tokenData) {
         currency,
         merchantId: TAP_CONFIG.merchantId,
         customerId: TAP_CONFIG.customerId,
-        redirectUrl: 'http://localhost:5173'
+        redirectUrl: `${window.location.origin}${window.location.pathname}`
       })
     });
 
@@ -440,8 +446,22 @@ async function handleTokenizationSuccess(tokenData) {
     const chargeId = result.data?.id;
     const chargeStatus = result.data?.status;
     const threeDSUrl = result.data?.threeDSUrl;
+    const paymentAgreement = result.data?.payment_agreement;
+    const chargeCardInfo = result.data?.card;
+    const customerInfo = result.data?.customer;
 
     cardData.chargeId = chargeId;
+
+    // Save card.id and customer.id - required to create a fresh token for MIT charges
+    if (chargeCardInfo?.id) cardData.savedToken = chargeCardInfo.id;
+    if (customerInfo?.id) cardData.customerId = customerInfo.id;
+
+    if (paymentAgreement?.id) {
+      cardData.paymentAgreementId = paymentAgreement.id;
+      console.log('✅ Payment Agreement:', cardData.paymentAgreementId);
+      console.log('✅ Card ID for MIT:', cardData.savedToken);
+      console.log('✅ Customer ID for MIT:', cardData.customerId);
+    }
 
     // Create transaction
     const transaction = {
@@ -514,16 +534,48 @@ async function handleMITPayment() {
     return;
   }
 
+  // Use savedToken (the card source ID from CIT response) for MIT charges
+  const tokenToUse = selectedCard.savedToken || selectedCard.token;
+
+  if (!tokenToUse) {
+    showStatus(statusEl, '❌ Selected card is missing token. Save card again with CIT.', 'error');
+    return;
+  }
+
   showStatus(statusEl, '⏳ Processing MIT charge (no 3DS)...', 'info');
 
   try {
-    // Simulate MIT charge processing (in production, this would call Tap API via backend)
+    const response = await fetch(`${TAP_CONFIG.backendBaseUrl}/api/charges/mit`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        token: tokenToUse,
+        amount: parseFloat(amount),
+        currency,
+        merchantId: TAP_CONFIG.merchantId,
+        customerId: selectedCard.customerId || TAP_CONFIG.customerId,
+        redirectUrl: `${window.location.origin}${window.location.pathname}`,
+        paymentAgreementId: selectedCard.paymentAgreementId
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || !result.success) {
+      throw new Error(result.error?.message || result.error?.details?.response?.message || 'MIT charge failed');
+    }
+
+    const chargeId = result.data?.id;
+    const chargeStatus = result.data?.status;
+
     const transaction = {
-      id: generateTransactionId(),
+      id: chargeId,
       type: 'MIT',
       amount: parseFloat(amount),
       currency,
-      status: 'captured',
+      status: chargeStatus?.toLowerCase() || 'captured',
       cardLast4: selectedCard.last4,
       tokenId: selectedCard.token,
       timestamp: new Date().toISOString(),
@@ -541,65 +593,9 @@ async function handleMITPayment() {
 }
 
 async function resumeFromRedirectCharge() {
-  const params = new URLSearchParams(window.location.search);
-  const tapId = params.get('tap_id') || params.get('charge_id');
-  if (!tapId) return;
-
-  const statusEl = document.getElementById('cit-status');
-  showStatus(statusEl, '⏳ Verifying charge status after redirect...', 'info');
-
-  const result = await callBackend(`/api/charges/${tapId}`, undefined, 'GET');
-  const chargeStatus = String(result.data?.status || 'UNKNOWN').toUpperCase();
-
-  // Update existing transaction entry when possible
-  const existingIdx = state.transactions.findIndex(tx => tx.id === tapId);
-  if (existingIdx >= 0) {
-    state.transactions[existingIdx].status = chargeStatus.toLowerCase();
-  } else {
-    state.transactions.unshift({
-      id: tapId,
-      type: 'CIT',
-      amount: Number(result.data?.amount || 0),
-      currency: result.data?.currency || TAP_CONFIG.defaultCurrency,
-      status: chargeStatus.toLowerCase(),
-      cardLast4: result.data?.card?.last_four || '****',
-      tokenId: '',
-      timestamp: new Date().toISOString(),
-      with3DS: true
-    });
-  }
-
-  // Persist pending card only if the final status is successful
-  const pendingRaw = localStorage.getItem(PENDING_CARD_KEY);
-  if (pendingRaw) {
-    const pending = JSON.parse(pendingRaw);
-    if (pending?.chargeId === tapId && SUCCESS_STATUSES.has(chargeStatus)) {
-      persistSavedCard(pending.cardData);
-      localStorage.removeItem(PENDING_CARD_KEY);
-      showStatus(statusEl, '✅ 3DS completed. Card saved successfully.', 'success');
-    } else if (pending?.chargeId === tapId) {
-      localStorage.removeItem(PENDING_CARD_KEY);
-      showStatus(statusEl, `❌ 3DS completed with status: ${chargeStatus}`, 'error');
-    }
-  }
-
-  saveSavedData();
-  renderSavedCards();
-  renderTransactionHistory();
-
-  // Clean URL query params after handling redirect
-  const cleanUrl = `${window.location.origin}${window.location.pathname}`;
-  window.history.replaceState({}, document.title, cleanUrl);
+  // Legacy compatibility path; primary reconciliation is handled in checkFor3DSReturn().
+  return checkFor3DSReturn();
 }
-
-function persistSavedCard(cardData) {
-  const exists = state.savedCards.some(card => card.token === cardData.token);
-  if (!exists) {
-    state.savedCards.push(cardData);
-  }
-  enableMITSection();
-}
-
 
 // Render saved cards
 function renderSavedCards() {
@@ -619,8 +615,12 @@ function renderSavedCards() {
       <div class="card-brand">${card.brand}</div>
       <div class="card-number">•••• •••• •••• ${card.last4}</div>
       <div class="card-expiry">Expires ${card.expMonth}/${card.expYear}</div>
-      <div class="token-label">Token</div>
+      <div class="token-label">Original Token</div>
       <div class="token-value">${card.token || 'N/A'}</div>
+      ${card.savedToken ? `
+        <div class="token-label" style="margin-top: 8px;">MIT Token (Saved Card)</div>
+        <div class="token-value">${card.savedToken}</div>
+      ` : ''}
     </div>
   `).join('');
 
@@ -777,7 +777,7 @@ window.TapPaymentsApp = {
 
     try {
       // Get charge status from backend
-      const response = await fetch(`http://localhost:4000/api/charges/${chargeId}`);
+      const response = await fetch(`${TAP_CONFIG.backendBaseUrl}/api/charges/${chargeId}`);
       const result = await response.json();
 
       if (!result.success) {

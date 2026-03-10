@@ -13,17 +13,11 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Load credentials from environment variables
-const TAP_SECRET_KEY = process.env.TAP_SECRET_KEY;
-const TAP_MERCHANT_ID = process.env.TAP_MERCHANT_ID;
+// Load credentials - hardcoded for development
+const TAP_SECRET_KEY = process.env.TAP_SECRET_KEY || 'sk_test_XKokBfNWv6FIYuTMg5sLPjhJ';
+const TAP_MERCHANT_ID = process.env.TAP_MERCHANT_ID || '1124340';
 const TAP_API_URL = process.env.TAP_API_URL || 'https://api.tap.company/v2';
 
-// Validate that secret key is set
-if (!TAP_SECRET_KEY || TAP_SECRET_KEY === 'sk_test_YOUR_SECRET_KEY_HERE') {
-  console.error('❌ ERROR: TAP_SECRET_KEY not set in .env file!');
-  console.log('Please create a .env file with your Tap secret key.');
-  process.exit(1);
-}
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -67,11 +61,36 @@ function mapTapResult(data) {
     amount: data.amount,
     currency: data.currency,
     card: data.card,
+    customer: data.customer,
     receipt: data.receipt,
     threeDSUrl: data.transaction?.url || null,
     redirect: data.redirect,
-    source: data.source
+    source: data.source,
+    payment_agreement: data.payment_agreement
   };
+}
+
+// Create a customer in Tap and return their ID
+async function createTapCustomer(customer) {
+  const response = await fetch(`${TAP_API_URL}/customers`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${TAP_SECRET_KEY}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      first_name: customer?.firstName || 'Customer',
+      last_name: customer?.lastName || 'User',
+      email: customer?.email || 'customer@example.com',
+      phone: {
+        country_code: customer?.phoneCountryCode || '965',
+        number: customer?.phoneNumber || '50000000'
+      }
+    })
+  });
+  const data = await response.json();
+  console.log('👤 Created customer:', data.id);
+  return data.id;
 }
 
 // Create CIT charge (customer initiated, 3DS true, save card true)
@@ -84,6 +103,12 @@ app.post('/api/charges/cit', async (req, res) => {
         success: false,
         error: { message: 'Missing required fields: token, amount, currency' }
       });
+    }
+
+    // Auto-create customer in Tap if not provided
+    let tapCustomerId = customerId;
+    if (!tapCustomerId && customer) {
+      tapCustomerId = await createTapCustomer(customer);
     }
 
     const chargeData = {
@@ -99,7 +124,13 @@ app.post('/api/charges/cit', async (req, res) => {
       source: {
         id: token
       },
-      customer: customerId ? { id: customerId } : {
+      // Payment agreement - Tap will auto-generate the agreement ID
+      payment_agreement: {
+        contract: {
+          type: 'UNSCHEDULED'  // For saved cards without fixed schedule
+        }
+      },
+      customer: tapCustomerId ? { id: tapCustomerId } : {
         first_name: customer?.firstName || 'Customer',
         last_name: customer?.lastName || 'User',
         email: customer?.email || 'customer@example.com',
@@ -136,10 +167,66 @@ app.post('/api/charges/cit', async (req, res) => {
   }
 });
 
+// Create or retrieve a saved card token for MIT charges
+// This endpoint converts a tokenized card into a reusable saved card source
+app.post('/api/tokens/create-from-card', async (req, res) => {
+  try {
+    const { token, customerId } = req.body;
+
+    if (!token || !customerId) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Missing required fields: token, customerId' }
+      });
+    }
+
+    // Create a token from the card for the customer
+    const tokenData = {
+      type: 'CARD',
+      token: token,
+      customer: {
+        id: customerId
+      }
+    };
+
+    console.log('🔷 Creating saved card token:', JSON.stringify(tokenData, null, 2));
+
+    const response = await fetch(`${TAP_API_URL}/tokens`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TAP_SECRET_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(tokenData)
+    });
+
+    const data = await response.json();
+
+    console.log('🔷 Token creation response:', response.status, JSON.stringify(data, null, 2));
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        error: { message: data.response?.message || 'Token creation failed', details: data }
+      });
+    }
+
+    return res.json({ success: true, data: { tokenId: data.id, token: data } });
+  } catch (error) {
+    console.error('Token creation error:', error);
+    return res.status(500).json({
+      success: false,
+      error: { message: error.message }
+    });
+  }
+});
+
 // Create MIT charge (merchant initiated, 3DS false, save card false)
 app.post('/api/charges/mit', async (req, res) => {
   try {
-    const { token, amount, currency, merchantId, customerId, redirectUrl } = req.body;
+    const { token, amount, currency, merchantId, customerId, redirectUrl, paymentAgreementId } = req.body;
+
+    console.log('📝 MIT Request Body:', { token, amount, currency, merchantId, customerId, paymentAgreementId });
 
     if (!token || !amount || !currency) {
       return res.status(400).json({
@@ -148,47 +235,103 @@ app.post('/api/charges/mit', async (req, res) => {
       });
     }
 
+    if (!paymentAgreementId) {
+      return res.status(400).json({
+        success: false,
+        error: { message: 'Payment Agreement ID is required for MIT charges' }
+      });
+    }
+
+
+    // Step 1: Create a fresh token from the saved card_id + customer_id
+    // (card IDs cannot be used directly in charge requests per Tap docs)
+    console.log('🔑 Creating token from saved card:', token, 'for customer:', customerId);
+
+    if (!customerId) {
+      console.warn('⚠️  No customerId provided. Tap will assign one during CIT - make sure to save it.');
+    }
+
+    const tokenResponse = await fetch(`${TAP_API_URL}/tokens`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${TAP_SECRET_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        saved_card: {
+          card_id: token,
+          customer_id: customerId
+        }
+      })
+    });
+
+    const tokenData = await tokenResponse.json();
+    console.log('🔑 Token Response:', JSON.stringify(tokenData, null, 2));
+
+    if (!tokenResponse.ok) {
+      return res.status(tokenResponse.status).json({
+        success: false,
+        error: { message: tokenData.response?.message || 'Failed to create token from saved card', details: tokenData }
+      });
+    }
+
+    const freshTokenId = tokenData.id;
+    console.log('✅ Fresh token created:', freshTokenId);
+
+    // Step 2: Use the fresh token to create the MIT charge
     const chargeData = {
       amount,
       currency,
       customer_initiated: false,
       threeDSecure: false,
       save_card: false,
-      description: 'MIT charge via saved token',
-      merchant: {
-        id: merchantId || TAP_MERCHANT_ID
+      description: 'MIT charge via saved card',
+      merchant: { id: merchantId || TAP_MERCHANT_ID },
+      source: { id: freshTokenId },
+      payment_agreement: { id: paymentAgreementId },
+      customer: customerId ? { id: customerId } : {
+        first_name: 'Customer',
+        last_name: 'User',
+        email: 'customer@example.com',
+        phone: { country_code: '965', number: '50000000' }
       },
-      source: {
-        id: token
-      },
-      redirect: {
-        url: redirectUrl || req.headers.origin || 'http://localhost:5173'
-      }
+      redirect: { url: redirectUrl || req.headers.origin || 'http://localhost:3000' }
     };
 
-    if (customerId) {
-      chargeData.customer = { id: customerId };
-    }
+    console.log('🔵 MIT Charge Request:', JSON.stringify(chargeData, null, 2));
 
     const { response, data } = await createTapCharge(chargeData);
 
+    console.log('🔵 MIT Charge Response Status:', response.status);
+    console.log('🔵 MIT Charge Response Data:', JSON.stringify(data, null, 2));
+
     if (!response.ok) {
+      console.error('❌ MIT Charge Failed:', {
+        status: response.status,
+        message: data.response?.message || data.message,
+        code: data.response?.code || data.code,
+        errors: data.errors,
+        fullResponse: data
+      });
+
       return res.status(response.status).json({
         success: false,
         error: {
-          message: data.response?.message || 'MIT charge failed',
-          code: data.response?.code,
+          message: data.response?.message || data.message || 'MIT charge failed',
+          code: data.response?.code || data.code,
+          errors: data.errors,
           details: data
         }
       });
     }
 
+    console.log('✅ MIT Charge Success:', data.id);
     return res.json({ success: true, data: mapTapResult(data) });
   } catch (error) {
-    console.error('MIT payment error:', error);
+    console.error('💥 MIT payment exception:', error);
     return res.status(500).json({
       success: false,
-      error: { message: error.message }
+      error: { message: error.message, stack: error.stack }
     });
   }
 });
@@ -269,7 +412,7 @@ app.get('/api/charges/:chargeId', async (req, res) => {
 });
 
 // Start server
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log('═══════════════════════════════════════════════════════');
